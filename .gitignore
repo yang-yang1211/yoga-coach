@@ -1,0 +1,25 @@
+# Python 虛擬環境
+venv/
+.venv/
+env/
+ENV/
+
+# Python 自動產生的暫存檔
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# 散佈或套件設定（如果你有打包的話）
+dist/
+build/
+*.egg-info/
+
+# IDE 設定 (建議忽略，避免把個人偏好上傳)
+.vscode/
+.idea/
+
+*.exe
+*.dll
+
+
+
