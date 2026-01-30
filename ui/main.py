@@ -16,6 +16,27 @@ class HoverButton(QFrame):
         self.is_hovered = False
         
         self.setStyleSheet("background: transparent;")
+
+        self.coach_bubble = QFrame(self)
+        self.coach_bubble.setGeometry(300, -100, 600, 80) # 初始藏在上面
+        self.coach_bubble.setStyleSheet("background: rgba(16, 185, 129, 220); border-radius: 40px; border: 2px solid white;")
+        self.coach_label = QLabel("教練加載中...", self.coach_bubble)
+        self.coach_label.setGeometry(20, 10, 560, 60)
+        self.coach_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.coach_label.setStyleSheet("color: white; font-weight: bold; font-size: 18px; background: transparent;")
+
+    def show_coach(self, text):
+        self.coach_label.setText(f"教練：{text}")
+        # 動畫：氣泡掉下來
+        self.anim = QPropertyAnimation(self.coach_bubble, b"pos")
+        self.anim.setDuration(800)
+        self.anim.setStartValue(QPoint(300, -100))
+        self.anim.setEndValue(QPoint(300, 50))
+        self.anim.setEasingCurve(QEasingCurve.Type.OutBack)
+        self.anim.start()
+        
+        # 5 秒後縮回去
+        QTimer.singleShot(5000, lambda: self.coach_bubble.move(300, -100))
         
     def set_progress(self, val):
         self.progress = val

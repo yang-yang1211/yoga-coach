@@ -1,151 +1,115 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-import pickle
-import json
+import xgboost as xgb
 import os
 import time
 
-class PoseCorrector:
+class PoseEngine:
     """
-    AI 姿勢校正模型核心
-    負責：AI 推論與 Mock 邏輯產生
+    處理 MediaPipe Pose 偵測與 XGBoost 姿勢辨識
     """
-    def __init__(self):
-        # 1. 初始化基礎 MediaPipe Pose 引擎
+    def __init__(self, model_path="yoga_pose_model_RightFoot.json",labels_path="rightfoot.json"):
+        print("[AI Engine] 正在初始化...", flush=True)
         self.mp_pose = mp.solutions.pose
+        self.mp_drawing = mp.solutions.drawing_utils
         self.pose = self.mp_pose.Pose(
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
             model_complexity=1
         )
-        
-        # 2. 狀態變數
-        self.model = None
-        self.scaler = None
+        self.user_style = self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3)
+
+        # 初始化 XGBoost
+        self.classifier = xgb.Booster()
+        if os.path.exists(model_path):
+            self.classifier.load_model(model_path)
+            self.model_loaded = True
+            print(f"[AI Engine] 🚀 成功載入模型: {model_path}", flush=True)
+        else:
+            self.model_loaded = False
+            print(f"[AI Engine] ⚠️ 找不到模型，將只顯示骨架", flush=True)
+
         self.labels = {}
-        self.is_mock = True 
-        self.status_msg = "初始化"
+        if os.path.exists(labels_path):
+            try:
+                with open(labels_path, 'r', encoding='utf-8') as f:
+                    # 假設 JSON 格式為 {"0": "動作A", "1": "動作B"}
+                    raw_labels = json.load(f)
+                    # 確保 key 為整數
+                    self.labels = {int(k): v for k, v in raw_labels.items()}
+                print(f"[AI Models] 成功載入標籤檔案: {labels_path}")
+            except Exception as e:
+                print(f"[AI Models] 標籤檔案格式錯誤: {e}")
+                self.labels = {0: "姿勢偏移", 1: "正確右平衡"} # 備用標籤
+        else:
+            print(f"[AI Models] ⚠️ 找不到標籤檔案，使用預設標籤")
+            self.labels = {0: "姿勢偏移", 1: "正確右平衡"}
 
-        # 3. 執行載入程序
-        self._bootstrap_model()
-
-    def _bootstrap_model(self):
-        """嘗試載入真實模型檔案"""
-        model_files = ['svm_model.pkl', 'model.pkl']
-        scaler_files = ['scaler.pkl']
-        label_files = ['labels.json', 'label.json']
-
-        def find_file(names):
-            for n in names:
-                if os.path.exists(n): return n
-            return None
-
-        m_path, s_path, l_path = find_file(model_files), find_file(scaler_files), find_file(label_files)
-
-        try:
-            if l_path:
-                with open(l_path, 'r', encoding='utf-8') as f:
-                    self.labels = json.load(f)
-            
-            if s_path:
-                with open(s_path, 'rb') as f:
-                    self.scaler = pickle.load(f)
-
-            if m_path:
-                with open(m_path, 'rb') as f:
-                    self.model = pickle.load(f)
-                
-                if hasattr(self.model, 'predict'):
-                    self.is_mock = False
-                    self.status_msg = "SVM 模式"
-                    return
-            
-            self.is_mock = True
-            self.status_msg = "MOCK 模式"
-        except Exception as e:
-            self.is_mock = True
-            self.status_msg = "MOCK (檔案損壞)"
-
-    def process_frame(self, frame):
-        """影像處理窗口"""
+    def process(self, frame):
+        """
+        處理影格
+        回傳: (標記影像, 骨骼數據, 辨識回饋文字)
+        """
+        if frame is None: return None, None, "No Signal"
+        
+        annotated_frame = frame.copy()
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.pose.process(frame_rgb)
         
-        feedback = "請進入畫面..."
+        feedback = "請進入畫面"
         skeleton_data = None
 
         if results.pose_landmarks:
             skeleton_data = results.pose_landmarks
-            # 根據模式執行判定
-            if self.is_mock:
-                feedback = self.mock_analyze(skeleton_data.landmark)
+            self.mp_drawing.draw_landmarks(
+                annotated_frame, 
+                skeleton_data, 
+                self.mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=self.user_style
+            )
+            
+            # 執行辨識
+            if self.model_loaded:
+                feedback = self._predict_pose(skeleton_data)
             else:
-                feedback = self.predict_real_svm(skeleton_data.landmark)
-        
-        # 格式化輸出，確保 UI 能清楚顯示
-        final_feedback = f"[{self.status_msg}] {feedback}"
-        
-        return {
-            "feedback_message": final_feedback,
-            "skeleton_data": skeleton_data
-        }
+                feedback = "偵測中..."
+            
+        return annotated_frame, skeleton_data, feedback
 
-    def predict_real_svm(self, landmarks):
-        """SVM 預測邏輯"""
+    def _predict_pose(self, landmarks):
         try:
-            expected = getattr(self.model, 'n_features_in_', 132)
-            pose_row = []
-            if expected == 132:
-                for lm in landmarks: pose_row.extend([lm.x, lm.y, lm.z, lm.visibility])
-            elif expected == 99:
-                for lm in landmarks: pose_row.extend([lm.x, lm.y, lm.z])
-            else:
-                for lm in landmarks: pose_row.extend([lm.x, lm.y])
-
-            X = self.scaler.transform([pose_row])
-            prediction = self.model.predict(X)[0]
-            return self.labels.get(str(prediction), f"動作 {prediction}")
+            features = []
+            for i in range(11, 31): # 提取肩膀到腳踝的 20 個點 (40維)
+                lm = landmarks.landmark[i]
+                features.extend([lm.x, lm.y])
+            
+            input_data = np.array([features], dtype=np.float32)
+            data = xgb.DMatrix(input_data)
+            preds = self.classifier.predict(data)
+            
+            class_idx = np.argmax(preds[0])
+            confidence = preds[0][class_idx]
+            
+            if confidence > 0.7:
+                return self.labels.get(class_idx, "未知動作")
+            return "正在捕捉動作..."
         except:
             return "分析中..."
 
-    def mock_analyze(self, landmarks):
-        """強化版 Mock 邏輯：檢查鼻子座標 Y 值"""
-        nose_y = landmarks[0].y
-        # 這裡是原本版本的簡單提示語
-        if nose_y > 0.65:
-            return "✅ 深度達標！保持核心穩定"
-        elif nose_y < 0.45:
-            return "💪 準備開始運動，請下蹲"
-        return "✨ 偵測中：請注意下蹲深度"
-
 class VTuberRenderer:
-    """虛擬角色渲染模型"""
     def __init__(self):
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_pose = mp.solutions.pose
+        self.style = self.mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=2, circle_radius=4)
 
-    def draw(self, skeleton_data):
-        """繪製 VTuber 畫像"""
-        # 建立 480x640 黑色背景
+    def render(self, skeleton_data):
         canvas = np.zeros((480, 640, 3), dtype="uint8")
-        
-        try:
-            if skeleton_data:
-                # 繪製數位感骨架
-                self.mp_drawing.draw_landmarks(
-                    canvas, 
-                    skeleton_data,
-                    self.mp_pose.POSE_CONNECTIONS,
-                    self.mp_drawing.DrawingSpec(color=(0, 229, 255), thickness=2, circle_radius=2),
-                    self.mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=1)
-                )
-                cv2.putText(canvas, "AI VTuber LIVE", (20, 50), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 229, 255), 2)
-            else:
-                cv2.putText(canvas, "Searching Trainer...", (180, 240), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (50, 50, 50), 1)
-        except:
-            pass
-            
+        if skeleton_data:
+            self.mp_drawing.draw_landmarks(
+                canvas, 
+                skeleton_data, 
+                self.mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=self.style
+            )
         return canvas

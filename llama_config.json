@@ -1,0 +1,5 @@
+{
+  "api_url": "http://localhost:11434/api/generate",
+  "model": "llama3",
+  "system_prompt": "你是一位專業健身教練。請根據數據提供精簡、專業且具鼓勵性的建議。禁止使用座標數值，字數限制 30 字內。"
+}

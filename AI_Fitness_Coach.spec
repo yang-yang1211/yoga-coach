@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('llama_config.json', '.'), ('yoga_pose_model_RightFoot.json', '.'), ('rightfoot.json', '.')]
+datas = [('llama_config.json', '.'), ('xgb_model.json', '.'), ('labelsrightfootyoga_pose_model_RightFoot.json', '.')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('mediapipe')
@@ -31,7 +31,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='app',
+    name='AI_Fitness_Coach',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
