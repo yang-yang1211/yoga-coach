@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QLabel, QFrame, 
-                             QVBoxLayout, QHBoxLayout, QGraphicsBlurEffect, QProgressBar)
-from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QEasingCurve, QParallelAnimationGroup, QTimer
-from PyQt6.QtGui import QPixmap, QFont, QImage, QKeyEvent, QPainter, QColor, QPen
+                             QVBoxLayout, QHBoxLayout, QGraphicsBlurEffect)
+from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QEasingCurve, QTimer, QParallelAnimationGroup
+from PyQt6.QtGui import QPixmap, QFont, QPainter, QColor, QPen
 import time
 
 class HoverButton(QFrame):
@@ -13,31 +13,8 @@ class HoverButton(QFrame):
         self.setFixedSize(100, 100)
         self.text = text
         self.progress = 0  # 0 ~ 100
-        self.is_hovered = False
-        
         self.setStyleSheet("background: transparent;")
 
-        self.coach_bubble = QFrame(self)
-        self.coach_bubble.setGeometry(300, -100, 600, 80) # 初始藏在上面
-        self.coach_bubble.setStyleSheet("background: rgba(16, 185, 129, 220); border-radius: 40px; border: 2px solid white;")
-        self.coach_label = QLabel("教練加載中...", self.coach_bubble)
-        self.coach_label.setGeometry(20, 10, 560, 60)
-        self.coach_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.coach_label.setStyleSheet("color: white; font-weight: bold; font-size: 18px; background: transparent;")
-
-    def show_coach(self, text):
-        self.coach_label.setText(f"教練：{text}")
-        # 動畫：氣泡掉下來
-        self.anim = QPropertyAnimation(self.coach_bubble, b"pos")
-        self.anim.setDuration(800)
-        self.anim.setStartValue(QPoint(300, -100))
-        self.anim.setEndValue(QPoint(300, 50))
-        self.anim.setEasingCurve(QEasingCurve.Type.OutBack)
-        self.anim.start()
-        
-        # 5 秒後縮回去
-        QTimer.singleShot(5000, lambda: self.coach_bubble.move(300, -100))
-        
     def set_progress(self, val):
         self.progress = val
         self.update()
@@ -56,7 +33,6 @@ class HoverButton(QFrame):
             pen = QPen(QColor(0, 229, 255), 6)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
-            # 角度以 1/16 度為單位，從 90 度開始逆時針旋轉
             span_angle = -int(self.progress * 3.6 * 16)
             painter.drawArc(10, 10, 80, 80, 90 * 16, span_angle)
 
@@ -91,7 +67,6 @@ class GlassBoard(QFrame):
         self.desc_label.setStyleSheet("color: rgba(255, 255, 255, 120);")
         self.desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.desc_label)
-        
         layout.addStretch()
 
 class MainUI(QMainWindow):
@@ -103,8 +78,12 @@ class MainUI(QMainWindow):
         self.setStyleSheet("background-color: black;")
         
         self.active_board = None
-        self.hover_start_time = None  # 紀錄懸停開始時間
-        self.trigger_duration = 1.5   # 觸發秒數
+        self.hover_start_time = None 
+        self.trigger_duration = 1.5   
+        
+        # --- 教練建議狀態管理 ---
+        self.coach_advice_active = False # 標記目前是否正在顯示教練建議
+        self.coach_advice_text = ""
 
         # --- 1. 背景與影像 ---
         self.video_bg = QLabel(self)
@@ -124,7 +103,6 @@ class MainUI(QMainWindow):
         self.update_m_btn_pos()
 
         # --- 3. 板塊與提示列 ---
-        # 鍵值對齊：Data, Settings, Calendar
         self.boards = {
             "Data": GlassBoard(self, "📊 數據中心", "#10b981"),
             "Settings": GlassBoard(self, "⚙ 系統設定", "#3b82f6"),
@@ -133,9 +111,35 @@ class MainUI(QMainWindow):
         self.reset_board_locations()
         self.setup_hint_bar()
         
-        # 確保初始層級正確
         self.video_bg.lower()
         self.m_button.raise_()
+
+    def show_coach(self, text):
+        """ 當收到 LLM 建議時，將其顯示在提示窗中 """
+        print(f"[UI 顯示] 教練建議已整合至提示窗: {text}")
+        
+        # 1. 開啟建議模式標記
+        self.coach_advice_active = True
+        self.coach_advice_text = text
+        
+        # 2. 立即更新 UI 視覺 (使用顯眼的金色/亮綠色)
+        self.status_icon.setText("💡")
+        self.status_text.setText(f"教練建議：{text}")
+        self.status_text.setStyleSheet("color: #fbbf24; font-weight: bold; font-size: 16px;") # 金色字體
+        self.hint_bar.setStyleSheet("""
+            background-color: rgba(6, 78, 59, 230); 
+            border: 3px solid #fbbf24; 
+            border-radius: 45px;
+        """)
+        
+        # 3. 8 秒後自動恢復普通狀態顯示
+        QTimer.singleShot(8000, self.reset_coach_status)
+
+    def reset_coach_status(self):
+        """ 恢復一般狀態顯示 """
+        self.coach_advice_active = False
+        self.status_text.setStyleSheet("color: white; font-weight: normal; font-size: 14px;")
+        # 顏色會由 update_status 下一次循環時根據模式自動修正
 
     def setup_hint_bar(self):
         self.hint_bar = QFrame(self)
@@ -152,19 +156,22 @@ class MainUI(QMainWindow):
         self.m_button.move(self.width() - 150, 50)
 
     def toggle_mode_logic(self):
-        """執行模式切換邏輯"""
         self.state.toggle_mode()
         if self.state.mode == "EXERCISE" and self.active_board:
             self.animate_back()
         self.status_text.setText(f"已切換至: {'運動模式' if self.state.mode == 'EXERCISE' else '操控模式'}")
 
     def update_status(self, is_active, fps, feedback, hand_x, hand_y):
-        """核心偵測邏輯：判斷手部是否懸停在 M 鍵上"""
+        """ 核心偵測邏輯 """
         self.fps_label.setText(f"FPS: {fps:.1f}")
         
+        # --- 若正在顯示教練建議，則跳過一般的文字更新，直到時間結束 ---
+        if self.coach_advice_active:
+            return
+
+        # 處理懸停邏輯 (略)
         if hand_x > 0 and hand_y > 0:
-            px = hand_x * self.width()
-            py = hand_y * self.height()
+            px = hand_x * self.width(); py = hand_y * self.height()
             btn_rect = self.m_button.geometry()
             if btn_rect.contains(int(px), int(py)):
                 if self.hover_start_time is None: self.hover_start_time = time.time()
@@ -173,15 +180,13 @@ class MainUI(QMainWindow):
                 self.m_button.set_progress(progress)
                 if elapsed >= self.trigger_duration:
                     self.toggle_mode_logic()
-                    self.hover_start_time = None 
-                    self.m_button.set_progress(0)
+                    self.hover_start_time = None; self.m_button.set_progress(0)
             else:
-                self.hover_start_time = None
-                self.m_button.set_progress(0)
+                self.hover_start_time = None; self.m_button.set_progress(0)
         else:
-            self.hover_start_time = None
-            self.m_button.set_progress(0)
+            self.hover_start_time = None; self.m_button.set_progress(0)
 
+        # 根據模式更新提示列外觀
         if self.state.mode == "EXERCISE":
             self.status_icon.setText("🏃")
             self.status_text.setText(f"運動模式 | {feedback}")
@@ -196,122 +201,59 @@ class MainUI(QMainWindow):
                 self.hint_bar.setStyleSheet("background-color: rgba(0, 0, 0, 200); border: 1px solid rgba(255, 255, 255, 40); border-radius: 45px;")
 
     def reset_board_locations(self):
-        """計算板塊在邊緣待命的位置"""
         w, h = self.width(), self.height()
-        self.boards["Data"].move((w - 650) // 2, -440)  # 上方藏更深
-        self.boards["Settings"].move((w - 650) // 2, h - 40) # 下方藏更深
-        self.boards["Calendar"].move(-610, (h - 480) // 2)   # 左側藏更深
+        self.boards["Data"].move((w - 650) // 2, -440)
+        self.boards["Settings"].move((w - 650) // 2, h - 40)
+        self.boards["Calendar"].move(-610, (h - 480) // 2)
 
     def handle_command(self, cmd):
-        """
-        處理手勢指令：擴展映射表以支援所有版本的引擎字串
-        """
         if self.state.mode == "EXERCISE": return
-        
-        # 修正：支援 TOP/BOTTOM/LEFT 與 DataPage/SettingsPage 等字串
-        mapping = {
-            "TOP": "Data",
-            "DataPage": "Data",
-            "BOTTOM": "Settings",
-            "SettingsPage": "Settings",
-            "LEFT": "Calendar",
-            "CalendarPage": "Calendar",
-            "CLOSE": "CLOSE",
-            "HomePage": "CLOSE"
-        }
-        
+        mapping = {"TOP": "Data", "DataPage": "Data", "BOTTOM": "Settings", "SettingsPage": "Settings", 
+                   "LEFT": "Calendar", "CalendarPage": "Calendar", "CLOSE": "CLOSE", "HomePage": "CLOSE"}
         real_cmd = mapping.get(cmd)
-        if not real_cmd:
-            print(f"[UI Warning] 收到未定義指令: {cmd}")
-            return
-
-        if real_cmd == "CLOSE":
-            self.animate_back()
-        else:
-            self.animate_pull_in(real_cmd)
+        if not real_cmd: return
+        if real_cmd == "CLOSE": self.animate_back()
+        else: self.animate_pull_in(real_cmd)
 
     def animate_pull_in(self, direction):
-        """將板塊從邊緣拉到中間"""
         if self.active_board == direction: return
         if self.active_board: self.animate_back(silent=True)
-
         target = self.boards.get(direction)
         if not target: return
-
-        # 重要：強制置頂，防止被影片或其他 UI 遮住
-        target.raise_()
-        self.active_board = direction
-        self.state.current_page = f"{direction}Page"
-        
+        target.raise_(); self.active_board = direction; self.state.current_page = f"{direction}Page"
         self.pull_group = QParallelAnimationGroup()
-        
-        # 位移動畫
         move = QPropertyAnimation(target, b"pos")
-        move.setDuration(600)
-        move.setStartValue(target.pos())
+        move.setDuration(600); move.setStartValue(target.pos())
         move.setEndValue(QPoint((self.width() - 650) // 2, (self.height() - 480) // 2))
-        move.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.pull_group.addAnimation(move)
-
-        # 背景模糊動畫
+        move.setEasingCurve(QEasingCurve.Type.OutCubic); self.pull_group.addAnimation(move)
         blur = QPropertyAnimation(self.blur_effect, b"blurRadius")
-        blur.setDuration(600)
-        blur.setEndValue(25.0)
-        self.pull_group.addAnimation(blur)
-        
+        blur.setDuration(600); blur.setEndValue(25.0); self.pull_group.addAnimation(blur)
         self.pull_group.start()
 
     def animate_back(self, silent=False):
-        """將板塊推回邊緣，但保留邊緣露出一小部分作為提示"""
         if not self.active_board: return
-        
-        target = self.boards[self.active_board]
-        direction = self.active_board
-        self.active_board = None
-        self.state.current_page = "HomePage"
-
-        w, h = self.width(), self.height()
-        end_p = QPoint(0,0)
-        
-        # 調整邊界值，使板塊露出一點 (約 40px)
-        if direction == "Data": 
-            end_p = QPoint((w - 650) // 2, -440) # 上方露出一點底部
-        elif direction == "Settings": 
-            end_p = QPoint((w - 650) // 2, h - 40) # 下方露出一點頂部
-        elif direction == "Calendar": 
-            end_p = QPoint(-610, (h - 480) // 2) # 左側露出一點右邊緣
-
+        target = self.boards[self.active_board]; direction = self.active_board
+        self.active_board = None; self.state.current_page = "HomePage"
+        w, h = self.width(), self.height(); end_p = QPoint(0,0)
+        if direction == "Data": end_p = QPoint((w - 650) // 2, -440)
+        elif direction == "Settings": end_p = QPoint((w - 650) // 2, h - 40)
+        elif direction == "Calendar": end_p = QPoint(-610, (h - 480) // 2)
         self.back_group = QParallelAnimationGroup()
-        
         move_back = QPropertyAnimation(target, b"pos")
-        move_back.setDuration(500)
-        move_back.setEndValue(end_p)
-        move_back.setEasingCurve(QEasingCurve.Type.OutCubic) # 改用 OutCubic 停下時較平滑
-        self.back_group.addAnimation(move_back)
-
+        move_back.setDuration(500); move_back.setEndValue(end_p)
+        move_back.setEasingCurve(QEasingCurve.Type.OutCubic); self.back_group.addAnimation(move_back)
         if not silent:
             clear_blur = QPropertyAnimation(self.blur_effect, b"blurRadius")
-            clear_blur.setDuration(500)
-            clear_blur.setEndValue(0.0)
-            self.back_group.addAnimation(clear_blur)
-
+            clear_blur.setDuration(500); clear_blur.setEndValue(0.0); self.back_group.addAnimation(clear_blur)
         self.back_group.start()
-    def update_video(self, qimg): 
-        self.video_bg.setPixmap(QPixmap.fromImage(qimg.copy()))
-        
-    def update_vtuber(self, qimg): 
-        self.vt_view.setPixmap(QPixmap.fromImage(qimg.copy()))
-        
-    def update_hint_pos(self): 
-        self.hint_bar.move((self.width() - 800) // 2, self.height() - 120)
-        
+
+    def update_video(self, qimg): self.video_bg.setPixmap(QPixmap.fromImage(qimg.copy()))
+    def update_vtuber(self, qimg): self.vt_view.setPixmap(QPixmap.fromImage(qimg.copy()))
+    def update_hint_pos(self): self.hint_bar.move((self.width() - 800) // 2, self.height() - 120)
     def resizeEvent(self, event):
         self.video_bg.setGeometry(0, 0, self.width(), self.height())
-        self.update_m_btn_pos()
-        self.update_hint_pos()
+        self.update_m_btn_pos(); self.update_hint_pos()
         if not self.active_board: self.reset_board_locations()
         super().resizeEvent(event)
-        
     def closeEvent(self, event): 
-        self.state.stop_signal = True
-        super().closeEvent(event)
+        self.state.stop_signal = True; super().closeEvent(event)
